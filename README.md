@@ -12,7 +12,7 @@ Template engine for server-side rendering in Toxi.
 
 ## Overview
 
-`toxi-template` provides a powerful and flexible template engine for server-side rendering in the Toxi web framework. It offers Jinja2-inspired syntax with features like template inheritance, includes, filters, and automatic HTML escaping for security.
+A template engine for server-side rendering. Supports template inheritance, includes, filters, and automatic HTML escaping. Uses a Jinja2-compatible syntax.
 
 ## Installation
 
