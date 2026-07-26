@@ -6,7 +6,7 @@ Template engine for server-side rendering in Toxi.
 
 [![Crates.io](https://img.shields.io/crates/v/toxi-template.svg)](https://crates.io/crates/toxi-template)
 [![Docs.rs](https://docs.rs/toxi-template/badge.svg)](https://docs.rs/toxi-template)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](../../LICENSE)
+[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache-2.0-blue.svg)](../../LICENSE)
 
 </div>
 
@@ -244,4 +244,4 @@ The template engine includes built-in security features:
 
 ## License
 
-MIT
+MIT OR Apache-2.0
