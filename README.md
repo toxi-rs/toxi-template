@@ -20,7 +20,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-toxi-template = "2.3.4"
+toxi-template = "3.1.0"
 ```
 
 ## Features
