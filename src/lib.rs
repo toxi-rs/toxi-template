@@ -22,6 +22,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::fs;
+use std::sync::{Arc, RwLock};
 
 /// Template parser (compiles template files into AST).
 pub mod parser;
@@ -101,47 +102,98 @@ impl Default for Context {
 }
 
 /// Read-only template configuration, safe to share as `State<TemplateContext>`.
-///
-/// Holds the template directory path. Routes extract it via
-/// `State<TemplateContext>` and call `render()` per-request — the
-/// `TemplateEngine` is instantiated on demand, keeping the core server
-/// runtime decoupled from presentation failures.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use toxi_template::{Context, TemplateContext};
-///
-/// let templates = TemplateContext::new("templates");
-/// let ctx = Context::new();
-/// let html = templates.render("index.html", &ctx).unwrap();
-/// ```
-#[derive(Debug, Clone)]
+ ///
+ /// Holds the template directory path with a cached compiled engine. The
+ /// directory is parsed once on first render rather than on every request,
+ /// since directory traversal with re-parsing dominated render cost. Call
+ /// `reload()` to pick up template changes from disk without restarting.
+ ///
+ /// # Example
+ ///
+ /// ```rust,ignore
+ /// use toxi_template::{Context, TemplateContext};
+ ///
+ /// let templates = TemplateContext::new("templates");
+ /// let ctx = Context::new();
+ /// let html = templates.render("index.html", &ctx).unwrap();
+ /// ```
+#[derive(Clone)]
 pub struct TemplateContext {
     directory: PathBuf,
+    engine: Arc<RwLock<Option<TemplateEngine>>>,
+}
+
+impl std::fmt::Debug for TemplateContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let loaded = self.engine.read().map(|e| e.is_some()).unwrap_or(false);
+        f.debug_struct("TemplateContext")
+            .field("directory", &self.directory)
+            .field("loaded", &loaded)
+            .finish()
+    }
 }
 
 impl TemplateContext {
     /// Create a new template context pointing at the given directory.
+    ///
+    /// Loading is deferred to the first `render` call so that construction
+    /// performs no I/O and cannot fail.
     pub fn new(dir: impl Into<PathBuf>) -> Self {
         Self {
             directory: dir.into(),
+            engine: Arc::new(RwLock::new(None)),
         }
+    }
+
+    /// Reload templates from disk, replacing the cached engine.
+    ///
+    /// Renders that are in flight complete against the previous engine,
+    /// since the swap holds the write lock only for the replacement.
+    pub fn reload(&self) -> Result<usize> {
+        let mut engine = TemplateEngine::new();
+        let count = engine.load_dir(&self.directory).map_err(|e| {
+            TemplateError::RenderError(format!(
+                "failed to load templates from {:?}: {e}",
+                self.directory
+            ))
+        })?;
+        *self.engine.write().unwrap_or_else(|e| e.into_inner()) = Some(engine);
+        Ok(count)
     }
 
     /// Render a template by name.
     ///
-    /// A new `TemplateEngine` is created per-call. This ensures the core
-    /// server runtime is never impacted by template loading errors.
+    /// The directory is loaded once and the compiled engine is reused for
+    /// subsequent renders. Load errors surface on the first render that
+    /// triggers loading; later renders fail only when rendering itself
+    /// fails, which keeps the core server runtime decoupled from repeated
+    /// filesystem access.
     pub fn render(&self, template: &str, context: &Context) -> Result<String> {
-        let mut engine = TemplateEngine::new();
-        engine
-            .load_dir(&self.directory)
-            .map_err(|e| TemplateError::RenderError(format!(
-                "failed to load templates from {:?}: {e}",
-                self.directory
-            )))?;
-        engine.render(template, context)
+        // Fast path: serve from the cached engine under a read lock.
+        if let Some(engine) = self.engine.read().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            return engine.render(template, context);
+        }
+        // Slow path: first render loads the directory under a write lock.
+        // A second checked read covers races between concurrent first renders.
+        {
+            let mut guard = self.engine.write().unwrap_or_else(|e| e.into_inner());
+            if guard.is_none() {
+                let mut engine = TemplateEngine::new();
+                engine.load_dir(&self.directory).map_err(|e| {
+                    TemplateError::RenderError(format!(
+                        "failed to load templates from {:?}: {e}",
+                        self.directory
+                    ))
+                })?;
+                *guard = Some(engine);
+            }
+        }
+        self.engine
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .expect("engine loaded above")
+            .render(template, context)
     }
 }
 
@@ -473,5 +525,35 @@ mod tests {
 
         let ctx = Context::new();
         assert_eq!(engine.render("page", &ctx).unwrap(), "<nav>NAV</nav>");
+    }
+
+    #[test]
+    fn test_template_context_caches_directory_load() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let dir = std::env::temp_dir().join(format!(
+            "toxi-tmpl-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("page.html"), "v1 {{ x }}").unwrap();
+
+        let templates = TemplateContext::new(&dir);
+        let mut ctx = Context::new();
+        ctx.set("x", "!");
+        assert_eq!(templates.render("page.html", &ctx).unwrap(), "v1 !");
+
+        // Disk changes are invisible until reload: the compiled engine is cached.
+        std::fs::write(dir.join("page.html"), "v2 {{ x }}").unwrap();
+        assert_eq!(templates.render("page.html", &ctx).unwrap(), "v1 !");
+
+        // Explicit reload picks up the new source.
+        assert_eq!(templates.reload().unwrap(), 1);
+        assert_eq!(templates.render("page.html", &ctx).unwrap(), "v2 !");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
