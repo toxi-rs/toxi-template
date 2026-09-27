@@ -190,10 +190,13 @@ impl<'a> Renderer<'a> {
         let mut output = String::new();
 
         if let Value::Array(items) = array {
+            // The loop context is cloned once and reused: each iteration
+            // overwrites the same variable key rather than duplicating the
+            // whole context map per element.
+            let var = item.to_string();
+            let mut loop_context = self.context.clone();
             for item_value in items {
-                // Create new context with loop variable
-                let mut loop_context = self.context.clone();
-                loop_context.data.insert(item.to_string(), item_value.clone());
+                loop_context.data.insert(var.clone(), item_value.clone());
 
                 let mut renderer = Renderer::new(&loop_context, self.engine);
                 // Pass blocks to loop renderer?
