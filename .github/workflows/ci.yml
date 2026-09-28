@@ -1,0 +1,19 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: moonrepo/setup-rust@v1
+        with:
+          channel: stable
+      - name: Check all targets
+        run: cargo check --all-targets
+      - name: Run tests
+        run: cargo test
