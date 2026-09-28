@@ -30,6 +30,11 @@ impl<'a> Renderer<'a> {
     ///
     /// Handles inheritance (`{% extends %}`), blocks, includes, variables,
     /// conditionals, and loops.
+    ///
+    /// A single output buffer threads through every nesting level.
+    /// The previous form allocated one `String` per `if`/`for`/block
+    /// level and concatenated on unwind; observable output and error
+    /// behavior are unchanged.
     pub fn render(&mut self, template: &Template) -> Result<String> {
         // Check for Extends (ignoring leading whitespace)
         let extends_node = template.parsed.iter().find(|node| {
@@ -63,11 +68,12 @@ impl<'a> Renderer<'a> {
             }
         }
 
-        self.render_nodes(&template.parsed)
+        let mut output = String::new();
+        self.render_nodes_into(&template.parsed, &mut output)?;
+        Ok(output)
     }
 
-    fn render_nodes(&mut self, nodes: &[TemplateNode]) -> Result<String> {
-        let mut output = String::new();
+    fn render_nodes_into(&mut self, nodes: &[TemplateNode], output: &mut String) -> Result<()> {
 
         for node in nodes {
             match node {
@@ -79,21 +85,19 @@ impl<'a> Renderer<'a> {
                     output.push_str(&value);
                 }
                 TemplateNode::If { condition, then_branch, elif_branches, else_branch } => {
-                    let value = self.render_if(condition, then_branch, elif_branches, else_branch)?;
-                    output.push_str(&value);
+                    self.render_if_into(condition, then_branch, elif_branches, else_branch, output)?;
                 }
                 TemplateNode::For { item, iterable, body } => {
-                    let value = self.render_for(item, iterable, body)?;
-                    output.push_str(&value);
+                    self.render_for_into(item, iterable, body, output)?;
                 }
                 TemplateNode::Block { name, body } => {
                     // If block is overridden, use that, else use default body
                     if let Some(override_body) = self.blocks.get(name).cloned() {
                         // We need to render the override body
-                        let nodes = override_body; 
-                        output.push_str(&self.render_nodes(&nodes)?);
+                        let nodes = override_body;
+                        self.render_nodes_into(&nodes, output)?;
                     } else {
-                        output.push_str(&self.render_nodes(body)?);
+                        self.render_nodes_into(body, output)?;
                     }
                 }
                 TemplateNode::Extends(_) => {
@@ -127,7 +131,7 @@ impl<'a> Renderer<'a> {
             }
         }
 
-        Ok(output)
+        Ok(())
     }
 
     fn render_variable(&self, name: &str, filter_names: &[String]) -> Result<String> {
@@ -156,38 +160,43 @@ impl<'a> Renderer<'a> {
         Ok(result)
     }
 
-    fn render_if(
+    fn render_if_into(
         &mut self,
         condition: &str,
         then_branch: &[TemplateNode],
         elif_branches: &[(String, Vec<TemplateNode>)],
         else_branch: &Option<Vec<TemplateNode>>,
-    ) -> Result<String> {
+        output: &mut String,
+    ) -> Result<()> {
         // Evaluate main condition
         if self.evaluate_condition(condition) {
-            return self.render_nodes(then_branch);
+            return self.render_nodes_into(then_branch, output);
         }
 
         // Evaluate elif branches in order
         for (elif_condition, elif_body) in elif_branches {
             if self.evaluate_condition(elif_condition) {
-                return self.render_nodes(elif_body);
+                return self.render_nodes_into(elif_body, output);
             }
         }
 
         // Fall back to else branch
         if let Some(else_nodes) = else_branch {
-            self.render_nodes(else_nodes)
+            self.render_nodes_into(else_nodes, output)
         } else {
-            Ok(String::new())
+            Ok(())
         }
     }
 
-    fn render_for(&mut self, item: &str, iterable: &str, body: &[TemplateNode]) -> Result<String> {
+    fn render_for_into(
+        &mut self,
+        item: &str,
+        iterable: &str,
+        body: &[TemplateNode],
+        output: &mut String,
+    ) -> Result<()> {
         let array = self.context.get(iterable)
             .ok_or_else(|| TemplateError::VariableNotFound(iterable.to_string()))?;
-
-        let mut output = String::new();
 
         if let Value::Array(items) = array {
             // The loop context is cloned once and reused: each iteration
@@ -203,11 +212,11 @@ impl<'a> Renderer<'a> {
                 // Loops are inside the template, so they should have access to blocks?
                 // Yes, if I use a block inside a loop?
                 renderer.blocks = self.blocks.clone();
-                output.push_str(&renderer.render_nodes(body)?);
+                renderer.render_nodes_into(body, output)?;
             }
         }
 
-        Ok(output)
+        Ok(())
     }
 
     fn evaluate_condition(&self, condition: &str) -> bool {
