@@ -4,7 +4,7 @@ Per-crate history extracted from the monolith changelog
 ([meshackbahati/toxi](https://github.com/meshackbahati/toxi/blob/main/CHANGELOG.md)),
 which remains the full documentation hub.
 
-## Unreleased
+## [3.1.2] - 2026-09-28
 
 - **toxi-template** (`3.1.2`): renderer threads one output buffer
   through all nesting levels; static files serve small files from a
